@@ -1,12 +1,13 @@
 import * as PIXI from 'pixi.js';
 import { Economy } from './core/Economy';
-import { OutcomeController, type CardModel, type PlayerChoice } from './core/OutcomeController';
+import { OutcomeController, type CardModel, type PlayerChoice, type CardResult } from './core/OutcomeController';
 import { GameStateMachine } from './core/GameStateMachine';
 import { CardRenderer } from './rendering/CardRenderer';
 import { HUD } from './rendering/HUD';
+import { displayMult } from './config/TierConfig';
 
-const GAME_W = 390;
-const GAME_H = 760;
+// ─── DOM panel states ─────────────────────────────────────────────────────────
+type BottomPanel = 'none' | 'choice' | 'result';
 
 export class Game {
   private app: PIXI.Application;
@@ -19,41 +20,131 @@ export class Game {
   private currentCard: CardModel | null = null;
   private seed: number;
 
-  constructor(container: HTMLElement) {
+  // Input lock: true while flip animation is in progress or result is being shown
+  private inputLocked = false;
+
+  // ─── DOM refs ───────────────────────────────────────────────────────────────
+  private readonly choiceButtonsEl: HTMLElement;
+  private readonly resultPanelEl: HTMLElement;
+  private readonly btnWatch: HTMLButtonElement;
+  private readonly btnSkip: HTMLButtonElement;
+  private readonly btnNext: HTMLButtonElement;
+  private readonly resultTitleEl: HTMLElement;
+  private readonly resultPayoutEl: HTMLElement;
+  private readonly resultInfoEl: HTMLElement;
+
+  // Stage dimensions (card-host size)
+  private readonly stageW: number;
+  private readonly stageH: number;
+
+  constructor(cardHost: HTMLElement) {
     this.seed = Date.now();
 
+    // Read card-host dimensions (guaranteed non-zero by main.ts)
+    this.stageW = cardHost.clientWidth;
+    this.stageH = cardHost.clientHeight;
+
+    // ── Pixi app fills card-host ────────────────────────────────────────────
     this.app = new PIXI.Application({
-      width: GAME_W,
-      height: GAME_H,
+      width: this.stageW,
+      height: this.stageH,
       backgroundColor: 0x0a0a0f,
       antialias: true,
       resolution: Math.min(window.devicePixelRatio || 1, 2),
       autoDensity: true,
     });
+    cardHost.appendChild(this.app.view as HTMLCanvasElement);
 
-    container.appendChild(this.app.view as HTMLCanvasElement);
-
+    // ── Core systems ────────────────────────────────────────────────────────
     this.economy = new Economy();
     this.outcome = new OutcomeController(this.seed);
     this.sm = new GameStateMachine();
 
-    this.cardRenderer = new CardRenderer(GAME_W, GAME_H);
-    this.hud = new HUD(this.economy, GAME_W);
-
+    // ── Card renderer (Pixi only — no buttons/result in canvas) ────────────
+    this.cardRenderer = new CardRenderer(this.stageW, this.stageH);
     this.app.stage.addChild(this.cardRenderer.container);
-    this.app.stage.addChild(this.hud.container);
 
-    this.cardRenderer.setCallbacks(
-      () => this.onPlayerChoice('watch'),
-      () => this.onPlayerChoice('skip'),
-      () => this.onNextCard(),
-    );
+    // ── DOM HUD ─────────────────────────────────────────────────────────────
+    this.hud = new HUD(this.economy);
+
+    // ── Grab DOM refs ───────────────────────────────────────────────────────
+    this.choiceButtonsEl = document.getElementById('choice-buttons')!;
+    this.resultPanelEl   = document.getElementById('result-panel')!;
+    this.btnWatch        = document.getElementById('btn-watch') as HTMLButtonElement;
+    this.btnSkip         = document.getElementById('btn-skip') as HTMLButtonElement;
+    this.btnNext         = document.getElementById('btn-next') as HTMLButtonElement;
+    this.resultTitleEl   = document.getElementById('result-title')!;
+    this.resultPayoutEl  = document.getElementById('result-payout')!;
+    this.resultInfoEl    = document.getElementById('result-info')!;
+
+    // ── Wire DOM buttons ────────────────────────────────────────────────────
+    this.btnWatch.addEventListener('click', () => this.handleChoice('watch'));
+    this.btnSkip.addEventListener('click',  () => this.handleChoice('skip'));
+    this.btnNext.addEventListener('click',  () => this.handleNext());
+
+    // ── Initial panel state ─────────────────────────────────────────────────
+    this.setPanel('none');
 
     this.showIntro();
   }
 
+  // ─── Panel management ────────────────────────────────────────────────────────
+
+  private setPanel(which: BottomPanel): void {
+    // Choice buttons
+    this.choiceButtonsEl.classList.toggle('hidden', which !== 'choice');
+    this.btnWatch.disabled = false;
+    this.btnSkip.disabled  = false;
+
+    // Result panel
+    this.resultPanelEl.classList.toggle('hidden', which !== 'result');
+    this.resultPanelEl.classList.toggle('visible', which === 'result');
+
+    // Bet button: allow cycling only before a card starts
+    this.hud.setInteractive(which === 'none');
+  }
+
+  private disableChoiceButtons(): void {
+    this.btnWatch.disabled = true;
+    this.btnSkip.disabled  = true;
+  }
+
+  // ─── Result panel ────────────────────────────────────────────────────────────
+
+  private showResultPanel(result: CardResult, bet: number): void {
+    this.resultPanelEl.className = result.won ? 'visible win' : 'visible lose';
+
+    this.resultTitleEl.textContent = result.won ? 'NICE!' : 'BUSTED';
+
+    if (result.won) {
+      // Gross payout uses full-precision multiplier; display rounds to 2dp.
+      const grossPayout = Math.round(bet * result.payoutMult);
+      this.resultPayoutEl.textContent =
+        `+${grossPayout} FUN \u00D7 x${displayMult(result.payoutMult)}`;
+    } else {
+      this.resultPayoutEl.textContent = `-${bet} FUN`;
+    }
+
+    // Info line: tells the player exactly why they won/lost so the multiplier
+    // displayed always matches the one shown on the card back for that choice.
+    const cardType  = result.card.isBomb ? 'BOMB \u{1F4A3}' : 'SAFE \u2705';
+    const choiceStr = result.choice === 'watch' ? '\u{1F441} WATCH' : '\u{1F6AB} SKIP';
+    const multStr   = result.won
+      ? ` (x${displayMult(result.payoutMult)})`
+      : '';
+    this.resultInfoEl.textContent =
+      `${choiceStr}${multStr} \u2014 ${cardType}`;
+
+    // Swap: hide choice buttons, show result
+    this.choiceButtonsEl.classList.add('hidden');
+    this.resultPanelEl.classList.remove('hidden');
+  }
+
+  // ─── Game flow ───────────────────────────────────────────────────────────────
+
   private showIntro(): void {
     this.sm.transition('intro');
+    this.setPanel('none');
 
     const introContainer = new PIXI.Container();
 
@@ -64,8 +155,8 @@ export class Game {
       fontFamily: 'monospace',
     });
     title.anchor.set(0.5);
-    title.x = GAME_W / 2;
-    title.y = GAME_H / 2 - 100;
+    title.x = this.stageW / 2;
+    title.y = this.stageH / 2 - 100;
     introContainer.addChild(title);
 
     const subtitle = new PIXI.Text('Watch or Skip. Trust your gut.', {
@@ -74,8 +165,8 @@ export class Game {
       fontFamily: 'monospace',
     });
     subtitle.anchor.set(0.5);
-    subtitle.x = GAME_W / 2;
-    subtitle.y = GAME_H / 2 - 45;
+    subtitle.x = this.stageW / 2;
+    subtitle.y = this.stageH / 2 - 50;
     introContainer.addChild(subtitle);
 
     const playBtn = new PIXI.Container();
@@ -94,8 +185,8 @@ export class Game {
     btnText.anchor.set(0.5);
     playBtn.addChild(btnText);
 
-    playBtn.x = GAME_W / 2;
-    playBtn.y = GAME_H / 2 + 30;
+    playBtn.x = this.stageW / 2;
+    playBtn.y = this.stageH / 2 + 30;
     playBtn.eventMode = 'static';
     playBtn.cursor = 'pointer';
 
@@ -118,19 +209,46 @@ export class Game {
       return;
     }
 
+    this.inputLocked = false;
     this.economy.startRound();
     this.sm.transition('running');
 
     this.currentCard = this.outcome.nextCard();
     this.cardRenderer.showCardBack(this.currentCard);
+
+    // Show choice buttons (enabled), hide result
+    this.setPanel('choice');
+  }
+
+  private handleChoice(choice: PlayerChoice): void {
+    if (this.inputLocked || this.cardRenderer.flipping) return;
+    if (!this.sm.is('running') || !this.currentCard) return;
+
+    this.inputLocked = true;
+    this.disableChoiceButtons();
+    this.onPlayerChoice(choice);
   }
 
   private async onPlayerChoice(choice: PlayerChoice): Promise<void> {
-    if (!this.sm.is('running') || !this.currentCard) return;
-
     this.sm.transition('revealing');
 
-    const result = this.outcome.resolve(this.currentCard, choice);
+    const result = this.outcome.resolve(this.currentCard!, choice);
+
+    // ── DEV-only assertion: payoutMult must exactly match the multiplier
+    // that was stored on the card for this choice, so the card back and
+    // the result popup can never disagree.
+    if (import.meta.env.DEV && result.won) {
+      const expected = choice === 'watch'
+        ? result.card.watchMult
+        : result.card.skipMult;
+      const EPSILON = 1e-9;
+      if (Math.abs(result.payoutMult - expected) > EPSILON) {
+        console.error(
+          '[DEV] Multiplier mismatch detected!',
+          { choice, payoutMult: result.payoutMult, expected, tierId: result.card.tier.id },
+        );
+      }
+    }
 
     await this.cardRenderer.flipAndReveal(result);
 
@@ -141,23 +259,25 @@ export class Game {
     }
 
     this.sm.transition('result');
-    this.cardRenderer.showResult(result, this.economy.bet);
+    this.showResultPanel(result, this.economy.bet);
+    // Bet selector becomes available during result (for choosing next round's bet)
+    this.hud.setInteractive(true);
   }
 
-  private onNextCard(): void {
+  private handleNext(): void {
     if (!this.sm.is('result')) return;
-    this.cardRenderer.hideResult();
     this.startNextCard();
   }
 
   private showGameOver(): void {
     this.sm.transition('gameover');
+    this.setPanel('none');
 
     const goContainer = new PIXI.Container();
 
     const bg = new PIXI.Graphics();
-    bg.beginFill(0x000000, 0.85);
-    bg.drawRect(0, 0, GAME_W, GAME_H);
+    bg.beginFill(0x000000, 0.88);
+    bg.drawRect(0, 0, this.stageW, this.stageH);
     bg.endFill();
     bg.eventMode = 'static';
     goContainer.addChild(bg);
@@ -169,8 +289,8 @@ export class Game {
       fontFamily: 'monospace',
     });
     title.anchor.set(0.5);
-    title.x = GAME_W / 2;
-    title.y = GAME_H / 2 - 80;
+    title.x = this.stageW / 2;
+    title.y = this.stageH / 2 - 80;
     goContainer.addChild(title);
 
     const cardsPlayed = new PIXI.Text(`Cards played: ${this.outcome.getCardIndex()}`, {
@@ -179,8 +299,8 @@ export class Game {
       fontFamily: 'monospace',
     });
     cardsPlayed.anchor.set(0.5);
-    cardsPlayed.x = GAME_W / 2;
-    cardsPlayed.y = GAME_H / 2 - 25;
+    cardsPlayed.x = this.stageW / 2;
+    cardsPlayed.y = this.stageH / 2 - 25;
     goContainer.addChild(cardsPlayed);
 
     const restartBtn = new PIXI.Container();
@@ -199,8 +319,8 @@ export class Game {
     btnText.anchor.set(0.5);
     restartBtn.addChild(btnText);
 
-    restartBtn.x = GAME_W / 2;
-    restartBtn.y = GAME_H / 2 + 40;
+    restartBtn.x = this.stageW / 2;
+    restartBtn.y = this.stageH / 2 + 40;
     restartBtn.eventMode = 'static';
     restartBtn.cursor = 'pointer';
 
@@ -219,13 +339,8 @@ export class Game {
 
   private restart(): void {
     this.seed = Date.now();
-    this.economy = new Economy();
+    this.economy.reset();
     this.outcome = new OutcomeController(this.seed);
-
-    this.app.stage.removeChild(this.hud.container);
-    this.hud = new HUD(this.economy, GAME_W);
-    this.app.stage.addChild(this.hud.container);
-
     this.startNextCard();
   }
 }

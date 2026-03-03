@@ -6,6 +6,7 @@
   <title>Swipe Hell</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+
     html, body {
       width: 100%;
       height: 100%;
@@ -14,19 +15,199 @@
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       -webkit-tap-highlight-color: transparent;
       user-select: none;
+      -webkit-user-select: none;
     }
-    #game-container {
+
+    /* ─── App shell: vertical flex column ───────────────────────── */
+    #app {
       width: 100%;
       height: 100%;
       display: flex;
-      justify-content: center;
-      align-items: center;
+      flex-direction: column;
+      overflow: hidden;
     }
-    canvas { display: block; }
+
+    /* ─── Top HUD ────────────────────────────────────────────────── */
+    #hud-top {
+      flex-shrink: 0;
+      height: 56px;
+      background: rgba(17, 17, 34, 0.97);
+      border-bottom: 1px solid #1e1e3a;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      z-index: 10;
+    }
+
+    #hud-balance {
+      color: #ffd700;
+      font-family: monospace;
+      font-size: 18px;
+      font-weight: bold;
+    }
+
+    #hud-bet {
+      background: #2a2a4e;
+      color: #fff;
+      border: 1px solid #3a3a6e;
+      border-radius: 10px;
+      padding: 6px 14px;
+      font-family: monospace;
+      font-size: 15px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    #hud-bet:active { background: #3a3a6e; }
+    #hud-bet:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ─── Card viewport ───────────────────────────────────────────── */
+    #card-host {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      background: #0a0a0f;
+      position: relative;
+    }
+    #card-host canvas { display: block; }
+
+    /* ─── Bottom panel (always visible, fixed height) ─────────────── */
+    #bottom-panel {
+      flex-shrink: 0;
+      height: 152px;
+      padding: 0 20px;
+      padding-bottom: max(16px, env(safe-area-inset-bottom));
+      background: #0d0d1a;
+      border-top: 1px solid #1e1e3a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ─── Choice buttons ─────────────────────────────────────────── */
+    #choice-buttons {
+      display: flex;
+      gap: 14px;
+      width: 100%;
+      max-width: 360px;
+    }
+
+    .choice-btn {
+      flex: 1;
+      height: 58px;
+      border: none;
+      border-radius: 16px;
+      font-size: 18px;
+      font-weight: bold;
+      font-family: monospace;
+      color: #fff;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+      letter-spacing: 0.5px;
+    }
+    .choice-btn:active { transform: scale(0.95); }
+    .choice-btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+      transform: none !important;
+    }
+    #btn-watch { background: #00cc66; }
+    #btn-skip  { background: #ff4466; }
+
+    /* ─── Result panel ───────────────────────────────────────────── */
+    #result-panel {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      width: 100%;
+      max-width: 360px;
+      padding: 12px 16px 10px;
+      border-radius: 16px;
+    }
+    #result-panel.visible { display: flex; }
+    #result-panel.win  { background: rgba(0, 60, 0, 0.92); }
+    #result-panel.lose { background: rgba(60, 0, 0, 0.92); }
+
+    #result-title {
+      font-size: 30px;
+      font-weight: bold;
+      font-family: monospace;
+      line-height: 1;
+    }
+    .win  #result-title { color: #00ff88; }
+    .lose #result-title { color: #ff3355; }
+
+    #result-payout {
+      font-size: 22px;
+      font-weight: bold;
+      font-family: monospace;
+      line-height: 1;
+    }
+    .win  #result-payout { color: #ffd700; }
+    .lose #result-payout { color: #ff3355; }
+
+    #result-info {
+      font-size: 12px;
+      color: #9999bb;
+      font-family: monospace;
+      text-align: center;
+      line-height: 1.3;
+    }
+
+    #btn-next {
+      margin-top: 6px;
+      width: 100%;
+      height: 42px;
+      background: #ffd700;
+      color: #000;
+      border: none;
+      border-radius: 12px;
+      font-size: 18px;
+      font-weight: bold;
+      font-family: monospace;
+      cursor: pointer;
+      letter-spacing: 1px;
+      transition: transform 0.1s;
+    }
+    #btn-next:active { transform: scale(0.97); }
+
+    /* ─── Utility ─────────────────────────────────────────────────── */
+    .hidden { display: none !important; }
   </style>
 </head>
 <body>
-  <div id="game-container"></div>
+  <div id="app">
+    <!-- Top HUD -->
+    <div id="hud-top">
+      <span id="hud-balance">💰 10000 FUN</span>
+      <button id="hud-bet">BET: 10 ▼</button>
+    </div>
+
+    <!-- Card viewport — Pixi canvas lives here -->
+    <div id="card-host"></div>
+
+    <!-- Bottom panel — always below card, never overlaps -->
+    <div id="bottom-panel">
+      <div id="choice-buttons" class="hidden">
+        <button class="choice-btn" id="btn-watch">👁 WATCH</button>
+        <button class="choice-btn" id="btn-skip">🚫 SKIP</button>
+      </div>
+      <div id="result-panel">
+        <div id="result-title">NICE!</div>
+        <div id="result-payout">+500 FUN</div>
+        <div id="result-info">You chose WATCH — Card was SAFE ✅</div>
+        <button id="btn-next">NEXT →</button>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

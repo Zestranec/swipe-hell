@@ -1,6 +1,22 @@
 import { Game } from './Game';
 
-const container = document.getElementById('game-container');
-if (!container) throw new Error('Missing #game-container');
+/**
+ * Wait until #card-host has been laid out by the browser before reading its
+ * dimensions (clientWidth / clientHeight). This is needed because the Pixi
+ * canvas must be sized to the card-host area, which is only known after the
+ * CSS flex layout has been computed for the first time.
+ */
+function init(): void {
+  const cardHost = document.getElementById('card-host');
+  if (!cardHost) throw new Error('Missing #card-host element');
 
-new Game(container);
+  if (cardHost.clientHeight === 0) {
+    // Layout hasn't been computed yet — defer by one animation frame.
+    requestAnimationFrame(init);
+    return;
+  }
+
+  new Game(cardHost);
+}
+
+init();

@@ -65,4 +65,11 @@ export class Economy {
   onChange(cb: () => void): void {
     this._onChange = cb;
   }
+
+  /** Reset to starting state (used on game restart). */
+  reset(): void {
+    this._balance = DEFAULT_BALANCE;
+    this._bet = BET_OPTIONS[0];
+    this._onChange?.();
+  }
 }
